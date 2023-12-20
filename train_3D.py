@@ -12,12 +12,8 @@ import torchvision.transforms as T
 
 from ip2p_3D import IP2P3D, seed_everything
 
-def load_infer_data(data_dir = '.',
-                    batch = 12,
-                    sample_frame_rate = 3,
-                    index = 0,
-                    w_size = None,
-                    h_size = None,
+def load_infer_data(data_dir = '.', batch = 12, sample_frame_rate = 3,
+                    index = 0, w_size = None, h_size = None,
                     device = torch.device('cpu')):
     
     img_dir = os.path.join(data_dir, "images")
@@ -84,6 +80,7 @@ if __name__ == '__main__':
 
     opt = parser.parse_args()
     opt.device = torch.device(f'cuda:{opt.device}')
+
     print(opt)
 
     seed_everything(opt.seed)
@@ -101,6 +98,7 @@ if __name__ == '__main__':
                                                h_size = opt.h_size,
                                                device = opt.device)
 
+    saving_dir_ip2p = os.path.join(saving_dir, 'ip2p')
     # load model
     model = IP2P3D(opt.device, ip2p_use_full_precision=opt.ip2p_use_full_precision)
     print(model.unet)
