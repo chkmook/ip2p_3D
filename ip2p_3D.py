@@ -17,8 +17,11 @@
 # Modified from https://github.com/ashawkey/stable-dreamfusion/blob/main/nerf/sd.py
 
 import sys
+import copy
+import tqdm
+
 from dataclasses import dataclass
-from typing import Union
+from typing import Union, Any, Dict, Optional
 
 import torch
 from torch import Tensor, nn
@@ -27,7 +30,6 @@ from jaxtyping import Float
 from diffusers import DDIMScheduler, StableDiffusionInstructPix2PixPipeline
 from transformers import logging
 
-import tqdm
 
 logging.set_verbosity_error()
 IMG_DIM = 512
@@ -48,7 +50,6 @@ def seed_everything(seed):
 class UNet2DConditionOutput:
     sample: torch.FloatTensor
 
-
 class IP2P3D(nn.Module):
     def __init__(self, device: Union[torch.device, str], num_train_timesteps: int = 1000, ip2p_use_full_precision=False) -> None:
         super().__init__()
@@ -62,6 +63,13 @@ class IP2P3D(nn.Module):
         pipe.scheduler.set_timesteps(100)
         assert pipe is not None
         pipe = pipe.to(self.device)
+
+        # to make 3D model compatible with 2D model
+        for name, module in pipe.unet.named_modules():
+            if name.endswith('transformer_blocks'):
+                module[0].attn1 = copy.deepcopy(module[0].attn1)
+                module[0].temp_attn = copy.deepcopy(module[0].attn1)
+                module.forward = lambda hidden, **kwargs: forward_3D(module[0], hidden, **kwargs)
 
         self.pipe = pipe
 
@@ -170,3 +178,116 @@ class IP2P3D(nn.Module):
 
     def forward(self):
         raise NotImplementedError
+
+
+
+
+
+
+
+
+def forward_3D(model, hidden_states, **kwargs) -> torch.FloatTensor:
+    # Notice that normalization is always applied before the real computation in the following blocks.
+    # 0. Self-Attention
+    batch_size = hidden_states.shape[0]
+
+    if model.use_ada_layer_norm:
+        norm_hidden_states = model.norm1(hidden_states, timestep)
+    elif model.use_ada_layer_norm_zero:
+        norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = model.norm1(
+            hidden_states, timestep, class_labels, hidden_dtype=hidden_states.dtype
+        )
+    elif model.use_layer_norm:
+        norm_hidden_states = model.norm1(hidden_states)
+    elif model.use_ada_layer_norm_single:
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            model.scale_shift_table[None] + timestep.reshape(batch_size, 6, -1)
+        ).chunk(6, dim=1)
+        norm_hidden_states = model.norm1(hidden_states)
+        norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
+        norm_hidden_states = norm_hidden_states.squeeze(1)
+    else:
+        raise ValueError("Incorrect norm used")
+
+    if model.pos_embed is not None:
+        norm_hidden_states = smodelelf.pos_embed(norm_hidden_states)
+
+    # 1. Retrieve lora scale.
+    lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
+
+    # 2. Prepare GLIGEN inputs
+    cross_attention_kwargs = cross_attention_kwargs.copy() if cross_attention_kwargs is not None else {}
+    gligen_kwargs = cross_attention_kwargs.pop("gligen", None)
+
+    attn_output = model.attn1(
+        norm_hidden_states,
+        encoder_hidden_states=encoder_hidden_states if model.only_cross_attention else None,
+        attention_mask=attention_mask,
+        **cross_attention_kwargs,
+    )
+    if model.use_ada_layer_norm_zero:
+        attn_output = gate_msa.unsqueeze(1) * attn_output
+    elif model.use_ada_layer_norm_single:
+        attn_output = gate_msa * attn_output
+
+    hidden_states = attn_output + hidden_states
+    if hidden_states.ndim == 4:
+        hidden_states = hidden_states.squeeze(1)
+
+    # 2.5 GLIGEN Control
+    if gligen_kwargs is not None:
+        hidden_states = model.fuser(hidden_states, gligen_kwargs["objs"])
+
+    # 3. Cross-Attention
+    if model.attn2 is not None:
+        if model.use_ada_layer_norm:
+            norm_hidden_states = model.norm2(hidden_states, timestep)
+        elif model.use_ada_layer_norm_zero or model.use_layer_norm:
+            norm_hidden_states = model.norm2(hidden_states)
+        elif model.use_ada_layer_norm_single:
+            # For PixArt norm2 isn't applied here:
+            # https://github.com/PixArt-alpha/PixArt-alpha/blob/0f55e922376d8b797edd44d25d0e7464b260dcab/diffusion/model/nets/PixArtMS.py#L70C1-L76C103
+            norm_hidden_states = hidden_states
+        else:
+            raise ValueError("Incorrect norm")
+
+        if model.pos_embed is not None and model.use_ada_layer_norm_single is False:
+            norm_hidden_states = model.pos_embed(norm_hidden_states)
+
+        attn_output = model.attn2(
+            norm_hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+            attention_mask=encoder_attention_mask,
+            **cross_attention_kwargs,
+        )
+        hidden_states = attn_output + hidden_states
+
+    # 4. Feed-forward
+    if not model.use_ada_layer_norm_single:
+        norm_hidden_states = model.norm3(hidden_states)
+
+    if model.use_ada_layer_norm_zero:
+        norm_hidden_states = norm_hidden_states * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+
+    if model.use_ada_layer_norm_single:
+        norm_hidden_states = model.norm2(hidden_states)
+        norm_hidden_states = norm_hidden_states * (1 + scale_mlp) + shift_mlp
+
+    if model._chunk_size is not None:
+        # "feed_forward_chunk_size" can be used to save memory
+        ff_output = _chunked_feed_forward(
+            model.ff, norm_hidden_states, model._chunk_dim, model._chunk_size, lora_scale=lora_scale
+        )
+    else:
+        ff_output = model.ff(norm_hidden_states, scale=lora_scale)
+
+    if model.use_ada_layer_norm_zero:
+        ff_output = gate_mlp.unsqueeze(1) * ff_output
+    elif model.use_ada_layer_norm_single:
+        ff_output = gate_mlp * ff_output
+
+    hidden_states = ff_output + hidden_states
+    if hidden_states.ndim == 4:
+        hidden_states = hidden_states.squeeze(1)
+
+    return hidden_states

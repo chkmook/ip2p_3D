@@ -1,5 +1,6 @@
 import os
 import math
+import copy
 import argparse
 import numpy as np
 
@@ -102,43 +103,17 @@ if __name__ == '__main__':
 
     # load model
     model = IP2P3D(opt.device, ip2p_use_full_precision=opt.ip2p_use_full_precision)
+    print(model.unet)
 
     # encode prompt
     text_embedding = model.pipe._encode_prompt(
         opt.tgt_prompt, device=opt.device, num_images_per_prompt=opt.batch,
         do_classifier_free_guidance=True, negative_prompt=""
     )
-    if opt.ip2p_use_full_precision: text_embedding = text_embedding.float()
-
-
-
-    print("Start editing...")
-    edited = model.edit_sequence(text_embedding,
-                                 images,
-                                 guidance_scale = opt.guidance_scale,
-                                 image_guidance_scale = opt.image_guidance_scale,
-                                 diffusion_steps = opt.diffusion_steps,
-                                 lower_bound = opt.lower_bound,
-                                 upper_bound = opt.upper_bound)
-    print("Done!")
-
-
-    # resize to original image size (often not necessary)
-    if (edited.size()[2:] != o_size):
-        print("Resizing...")
-        edited = torch.nn.functional.interpolate(edited, size=o_size, mode='bilinear')
-        images = torch.nn.functional.interpolate(images, size=o_size, mode='bilinear')
-        print("Done!")
-
-    # convert to numpy array
-    original = 255.0 * rearrange(images, "b c h w ->b h w c")
-    original = [Image.fromarray(img.type(torch.uint8).cpu().numpy()) for img in original]
-    edited = 255.0 * rearrange(edited, "b c h w ->b h w c")
-    edited = [Image.fromarray(img.type(torch.uint8).cpu().numpy()) for img in edited]
     
-    # concat two images and save
-    for i, (original_img, edited_img) in enumerate(zip(original, edited)):
-        saving_img = Image.new('RGB', (original_img.width * 2, original_img.height))
-        saving_img.paste(original_img, (0, 0))
-        saving_img.paste(edited_img, (original_img.width, 0))
-        saving_img.save(os.path.join(saving_dir, f'{str(i).zfill(4)}.png'))
+    if opt.ip2p_use_full_precision: text_embedding = text_embedding.float()
+    
+    for name, module in model.unet.named_modules():
+        if name.endswith('transformer_blocks'):
+            print(name, len(module))
+            import pdb; pdb.set_trace()
