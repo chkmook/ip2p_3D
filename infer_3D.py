@@ -100,69 +100,6 @@ if __name__ == '__main__':
                                                h_size = opt.h_size,
                                                device = opt.device)
 
-
-
-    saving_dir_ip2p = os.path.join(saving_dir, 'ip2p')
-    os.makedirs(saving_dir_ip2p, exist_ok=True)
-    # load model
-    model = IP2P3D(opt.batch, opt.device, ip2p_use_full_precision=opt.ip2p_use_full_precision)
-
-    # encode prompt
-    with torch.no_grad():
-        text_embedding = model.pipe._encode_prompt(
-            opt.tgt_prompt, device=opt.device, num_images_per_prompt=opt.batch,
-            do_classifier_free_guidance=True, negative_prompt=""
-        )
-        if opt.ip2p_use_full_precision: text_embedding = text_embedding.float()
-
-
-    print("Start editing...")
-    with torch.no_grad():
-        edited = model.edit_sequence(text_embedding, images,
-                                    guidance_scale = opt.guidance_scale,
-                                    image_guidance_scale = opt.image_guidance_scale,
-                                    diffusion_steps = opt.diffusion_steps,
-                                    lower_bound = opt.lower_bound,
-                                    upper_bound = opt.upper_bound)
-    print("Done!")
-
-
-    # resize to original image size (often not necessary)
-    if (edited.size()[2:] != o_size):
-        print("Resizing...")
-        edited = torch.nn.functional.interpolate(edited, size=o_size, mode='bilinear')
-        original = torch.nn.functional.interpolate(images, size=o_size, mode='bilinear')
-        print("Done!")
-
-    # convert to numpy array
-    original = 255.0 * rearrange(original, "b c h w ->b h w c")
-    original = [Image.fromarray(img.type(torch.uint8).cpu().numpy()) for img in original]
-    edited = 255.0 * rearrange(edited, "b c h w ->b h w c")
-    edited = [Image.fromarray(img.type(torch.uint8).cpu().numpy()) for img in edited]
-    
-
-    print("Saving...")
-    # concat two images and save
-    for i, (original_img, edited_img) in enumerate(zip(original, edited)):
-        saving_img = Image.new('RGB', (original_img.width * 2, original_img.height))
-        saving_img.paste(original_img, (0, 0))
-        saving_img.paste(edited_img, (original_img.width, 0))
-        saving_img.save(os.path.join(saving_dir_ip2p, f'{str(i).zfill(4)}.png'))
-    print("Done!")
-    
-
-
-
-
-    del model
-    del text_embedding
-    del edited
-    del original
-    torch.cuda.empty_cache()
-
-
-
-
     saving_dir_ip2p_3D = os.path.join(saving_dir, 'ip2p_3D')
     os.makedirs(saving_dir_ip2p_3D, exist_ok=True)
     # load model
@@ -181,11 +118,10 @@ if __name__ == '__main__':
     print("Start editing...")
     with torch.no_grad():
         edited = model.edit_sequence(text_embedding, images,
-                                    guidance_scale = opt.guidance_scale,
-                                    image_guidance_scale = opt.image_guidance_scale,
-                                    diffusion_steps = opt.diffusion_steps,
-                                    lower_bound = opt.lower_bound,
-                                    upper_bound = opt.upper_bound)
+                                     image_guidance_scale = opt.image_guidance_scale,
+                                     diffusion_steps = opt.diffusion_steps,
+                                     lower_bound = opt.lower_bound,
+                                     upper_bound = opt.upper_bound)
     print("Done!")
 
 

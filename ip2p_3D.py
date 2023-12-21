@@ -77,9 +77,11 @@ class IP2P3D(nn.Module):
         pipe.enable_attention_slicing()
 
         # to make 3D model compatible with 2D model
+        print(use_temp_attn)
         if use_temp_attn:
             for name, module in pipe.unet.named_modules():
                 if name.endswith('transformer_blocks'):
+                    print("3D model found, converting to 2D model")
                     module[0].attn_temp = copy.deepcopy(module[0].attn1)
                     nn.init.zeros_(module[0].attn_temp.to_out[0].weight.data)
                     module[0].norm4 = copy.deepcopy(module[0].norm3)
