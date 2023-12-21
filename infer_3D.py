@@ -9,7 +9,7 @@ from einops import rearrange
 import torch
 import torchvision.transforms as T
 
-from ip2p_3D import IP2P3D, seed_everything
+from IP2P3D import IP2P3D, seed_everything
 
 def load_infer_data(data_dir = '.',
                     batch = 12,
