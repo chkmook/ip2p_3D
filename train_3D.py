@@ -1,7 +1,10 @@
 import os
+
 import math
-import json
 import time
+import json
+
+import imageio
 import argparse
 import numpy as np
 
@@ -16,6 +19,7 @@ from diffusers.optimization import get_scheduler
 
 from dataset import Dataset3D
 from IP2P3D import IP2P3D, seed_everything
+
 
 
 
@@ -72,7 +76,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch', type=int, default=12)
     parser.add_argument('--sample_frame_rate', type=int, default=3)
 
-    parser.add_argument('--tgt_prompt', type=str, default='')
+    parser.add_argument('--train_prompt', type=str, default='')
+    parser.add_argument('--infer_prompt', type=str, default='Give him a red checkered jacket')
     parser.add_argument("--guidance_scale", type=float, default=7.5)
     parser.add_argument("--image_guidance_scale", type=float, default=5.)
     
@@ -85,6 +90,7 @@ if __name__ == '__main__':
 
     # Training parameters
     parser.add_argument('--max_train_epochs', type=int, default=100)
+    parser.add_argument('--val_epochs', type=int, default=20)
     parser.add_argument('--lr', type=float, default=3e-5)
     parser.add_argument('--trainable_modules', nargs='+', type=str, default=['attn1.to_q', 'attn2.to_q', 'attn_temp'])
     # AdamW parameters
@@ -149,16 +155,54 @@ if __name__ == '__main__':
         raise NotImplementedError("나중에")
 
     for epoch in tqdm(range(first_epoch, opt.max_train_epochs), desc='Epochs'):
+
+        # validation
+        if epoch % opt.val_epochs == 0 and epoch > 0:
+            with torch.no_grad():
+                # load data for inference
+                images, o_size, new_size = load_infer_data(data_dir = opt.data_path,
+                                                           batch = opt.batch,
+                                                           w_size = opt.w_size,
+                                                           h_size = opt.h_size,
+                                                           device = opt.device)
+                # encode prompt
+                text_embedding = model.pipe._encode_prompt(opt.infer_prompt, device=opt.device,
+                                                           num_images_per_prompt=opt.batch,
+                                                           do_classifier_free_guidance=True)
+                if opt.ip2p_use_full_precision: text_embedding = text_embedding.float()
+                # inference
+                edited = model.edit_sequence(text_embedding, images,
+                                             image_guidance_scale = opt.image_guidance_scale,
+                                             diffusion_steps = opt.diffusion_steps,
+                                             lower_bound = opt.lower_bound,
+                                             upper_bound = opt.upper_bound)
+                f"{saving_dir}/samples"
+                # resize to original image size (often not necessary)
+                if (edited.size()[2:] != o_size):
+                    edited = torch.nn.functional.interpolate(edited, size=o_size, mode='bilinear')
+
+                # convert to numpy array and save
+                edited = 255.0 * rearrange(edited, "b c h w ->b h w c")
+                edited = [Image.fromarray(img.type(torch.uint8).cpu().numpy()) for img in edited]
+                
+                # make it to gif file
+                sample_dir = os.path.join(f"{saving_dir}/samples", f'epoch_{epoch}')
+                os.makedirs(sample_dir, exist_ok=True)
+                for i, img in enumerate(edited):
+                    img.save(os.path.join(sample_dir, f'{str(i).zfill(4)}.png'))
+                imageio.mimsave(f'{sample_dir}/output.gif', edited, duration=1)
+
+        # train
         model.unet.train()
         train_loss = 0.0
-
         # encode prompt
-        text_embedding = model.pipe._encode_prompt(opt.tgt_prompt, device=opt.device,
+        text_embedding = model.pipe._encode_prompt(opt.train_prompt, device=opt.device,
                                                    num_images_per_prompt=opt.batch,
                                                    do_classifier_free_guidance=False)
         if opt.ip2p_use_full_precision: text_embedding = text_embedding.float()
 
         for step, batch in enumerate(dataloader):
+            print(step)
             
             images = batch["images"].squeeze(0).to(opt.device)
 
@@ -173,13 +217,17 @@ if __name__ == '__main__':
                 noise_input = torch.cat([noise_input, latents], dim=1)
 
             noise_pred = model.unet(noise_input, timesteps, text_embedding, return_dict=False)[0]
+            
+            loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
+            
+            optimizer.zero_grad()
+            loss.backward()
 
-            import pdb; pdb.set_trace()
+            optimizer.step()
+            lr_scheduler.step()
 
-            loss = F.mse_loss(noise_pred.float(), noise[0].float(), reduction="mean")
-
-            import pdb; pdb.set_trace()
-
+            train_loss += loss.item() / max_train_steps
+            
             if step >= max_train_steps:
                 break
     
