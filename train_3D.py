@@ -158,6 +158,7 @@ if __name__ == '__main__':
 
         # validation
         if epoch % opt.val_epochs == 0 and epoch > 0:
+            model.eval()
             with torch.no_grad():
                 # load data for inference
                 images, o_size, new_size = load_infer_data(data_dir = opt.data_path,
@@ -193,8 +194,8 @@ if __name__ == '__main__':
                 imageio.mimsave(f'{sample_dir}/output.gif', edited, duration=1)
 
         # train
-        model.unet.train()
-        train_loss = 0.0
+        model.train()
+        epoch_loss = 0.0
         # encode prompt
         text_embedding = model.pipe._encode_prompt(opt.train_prompt, device=opt.device,
                                                    num_images_per_prompt=opt.batch,
@@ -203,6 +204,8 @@ if __name__ == '__main__':
 
         for step, batch in enumerate(dataloader):
             print(step)
+            for name, params in model.named_parameters():
+                print(name, params.requires_grad)
             
             images = batch["images"].squeeze(0).to(opt.device)
 
@@ -219,15 +222,17 @@ if __name__ == '__main__':
             noise_pred = model.unet(noise_input, timesteps, text_embedding, return_dict=False)[0]
             
             loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
+            # epoch_loss += loss.detach().item()
             
             optimizer.zero_grad()
             loss.backward()
 
             optimizer.step()
             lr_scheduler.step()
-
-            train_loss += loss.item() / max_train_steps
             
             if step >= max_train_steps:
                 break
+
+        epoch_loss /= max_train_steps
+        print(f"Epoch [{epoch+1}/{opt.max_train_epochs}], Epoch Loss: {epoch_loss}")
     
