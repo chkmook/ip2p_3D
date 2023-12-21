@@ -88,3 +88,42 @@ class Dataset3D(Dataset):
         cam = {}
         
         return {'images': frames, 'cam': cam, 'idx': sample_index}
+    
+
+
+
+def load_infer_data(data_dir = '.', batch = 12, sample_frame_rate = 3,
+                    index = 0, w_size = None, h_size = None,
+                    device = torch.device('cpu')):
+    
+    img_dir = os.path.join(data_dir, "images")
+    image_list = [img for img in os.listdir(img_dir) if img.endswith(".jpg") or img.endswith(".png")]
+    image_list.sort()
+    images = [os.path.join(img_dir, img) for img in image_list]
+
+    sample_index = [index + i * sample_frame_rate for i in range(batch)]
+    sample_index = [i % len(images) for i in sample_index]
+        
+    frame_paths = [images[i] for i in sample_index]
+    frames = [Image.open(frame_path) for frame_path in frame_paths]
+
+    o_width, o_height = frames[0].size
+
+    if h_size is None or w_size is None:
+        factor = math.ceil(min(o_width, o_height) / 64) * 64 / min(o_width, o_height)
+        width = int((o_width * factor) // 64) * 64
+        height = int((o_height * factor) // 64) * 64
+    else:
+        if h_size%64 != 0 or w_size%64 != 0:
+            raise ValueError("h_size and w_size must be multiples of 64")
+        width = w_size
+        height = h_size
+
+    # resize images in frames
+    frames = [frame.resize((width, height), resample=Image.BILINEAR) for frame in frames]
+    frames = [torch.from_numpy(np.array(img, dtype="uint8").astype("float32")) / 255.0 for img in frames]
+
+    frames = torch.stack(frames)
+    frames = rearrange(frames, "f h w c -> f c h w")
+
+    return frames.to(device), [o_height, o_width], [h_size, w_size]

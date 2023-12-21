@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=0 python train_3D.py \
+CUDA_VISIBLE_DEVICES=1 python train_3D.py \
     --data_path ../in2n-data/face \
     --guidance_scale 7.5 \
     --image_guidance_scale 1.5 \

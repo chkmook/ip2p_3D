@@ -76,18 +76,22 @@ class IP2P3D(nn.Module):
         # improve memory performance
         pipe.enable_attention_slicing()
 
-
         # to make 3D model compatible with 2D model
         if use_temp_attn:
             for name, module in pipe.unet.named_modules():
                 if name.endswith('transformer_blocks'):
+                    import pdb; pdb.set_trace()
+                    
                     module[0].attn_temp = copy.deepcopy(module[0].attn1)
                     nn.init.zeros_(module[0].attn_temp.to_out[0].weight.data)
+
+                    # module[0].attn_temp = None
                     module[0].norm4 = copy.deepcopy(module[0].norm3)
 
                     module[0].attn1.processor = SpatialTemporalProcessor(4, self.batch)
 
                     module[0].forward = forward_3D.__get__(module[0], type(module[0]))
+        
 
 
         self.pipe = pipe
@@ -142,9 +146,10 @@ class IP2P3D(nn.Module):
         noise = torch.randn_like(latents)
         latents = self.scheduler.add_noise(latents, noise, self.scheduler.timesteps[0])  # type: ignore
 
+
         # sections of code used from https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion_instruct_pix2pix.py
         tqdm_bar = tqdm.tqdm(self.scheduler.timesteps)
-        for i, t in enumerate(tqdm_bar):
+        for t in tqdm_bar:
 
             # predict the noise residual with unet, NO grad!
             with torch.no_grad():
@@ -169,7 +174,6 @@ class IP2P3D(nn.Module):
         with torch.no_grad():
             decoded_img = self.latents_to_img(latents)
         return decoded_img
-    
 
     def latents_to_img(self, latents: Float[Tensor, "BS 4 H W"]) -> Float[Tensor, "BS 3 H W"]:
         latents = 1 / CONST_SCALE * latents
